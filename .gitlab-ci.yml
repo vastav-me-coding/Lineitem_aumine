@@ -1,0 +1,618 @@
+variables:
+  TF_ROOT: infrastructure/
+  TF_PLAN: plan_${ENVIRONMENT}.tfplan
+  TF_VAR_FILE: ../config/${ENVIRONMENT}.tfvars
+  TF_BACKEND_VAR_FILE: ../config/${ENVIRONMENT}_backend.tfvars
+  SKIP_NEW_IMAGE_BUILD: 'false'
+  SKIP_FLYWAY_MIGRATIONS: 'true'
+
+include:
+  - project: "aon/affinity/ods/ods_gitlabterraformmodules"
+    ref: master
+    file:
+      - '/templates/terraform/.terraform.yml'
+      - '/templates/ods-lambda-apis/.lambda.yml'
+      - '/templates/flyway/.flyway.yml'
+
+stages:
+  #- test
+  - develop:validate
+  - develop:deploy
+  - develop:plan
+  - develop:apply
+  - develop:migrations
+  - qa:validate
+  - qa:deploy
+  - qa:plan
+  - qa:apply
+  - qa:migrations
+  - staging:validate
+  - staging:deploy
+  - staging:plan
+  - staging:apply
+  - staging:migrations
+  - production:validate
+  - production:deploy
+  - production:plan
+  - production:apply
+  - production:migrations
+
+# test:
+#   stage: test
+#   image: docker-remote.repo.eap.aon.com/python
+#   script:
+#     - echo HI
+#     #- pwd; ls -ltr; python3 --version
+#     #- python3 -m pip install -r requirements.txt
+#     # - cd src
+#     # - python3 -m pytest -v
+#   tags:
+#     - affinity
+#     - aws
+#     - nclavndapp00444
+#     - dev
+#     - useast1
+#     - docker
+
+validate_develop:
+  stage: develop:validate
+  variables:
+    ENVIRONMENT: develop
+  extends:
+    - .terraform-init
+  script:
+    - terraform validate
+  only:
+    refs:
+      - develop
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+validate_qa:
+  stage: qa:validate
+  variables:
+    ENVIRONMENT: qa
+  extends:
+    - .terraform-init
+  script:
+    - terraform validate
+  only:
+    refs:
+      - qa
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+validate_staging:
+  stage: staging:validate
+  variables:
+    ENVIRONMENT: staging
+  extends:
+    - .terraform-init
+  script:
+    - terraform validate
+  only:
+    refs:
+      - staging
+  tags:
+    - affinity
+    - aws
+    - claviqap8021
+    - staging
+    - useast1
+    - docker
+
+validate_production:
+  stage: production:validate
+  variables:
+    ENVIRONMENT: production
+  extends:
+    - .terraform-init
+  script:
+    - terraform validate
+  only:
+    refs:
+      - master
+  tags:
+    - affinity
+    - aws
+    - prod
+    - useast1
+    - docker
+
+deploy_develop:
+  stage: develop:deploy
+  variables:
+    ENVIRONMENT: develop
+  # dependencies:
+  #   - test
+  #extends:
+  #  - .docker-build-deploy
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  before_script:
+    - apk add --no-cache aws-cli
+    - apk add --no-cache git
+    - source ./config/${ENVIRONMENT}.env
+    - export ECR_LAMBDA_DKR_REG="$AWS_ACCOUNT_ID".dkr.ecr."$AWS_REGION".amazonaws.com
+    - echo $ECR_LAMBDA_DKR_REG
+    - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_LAMBDA_DKR_REG
+    - wget -O jq https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
+    - chmod +x ./jq
+    - aws secretsmanager get-secret-value --secret-id $AON_ARTIFACTORY_DKR_CREDS --query 'SecretString' --output text --region $AWS_REGION >> aon_artifactory_creds.json
+    - export AON_ARTIFACTORY_DKR_USER=$(./jq <aon_artifactory_creds.json '.username' | tr -d '"')
+    - export AON_ARTIFACTORY_DKR_PASSWORD=$(./jq <aon_artifactory_creds.json '.password' | tr -d '"')
+    - docker login $AON_ARTIFACTORY_DKR_REG -u $AON_ARTIFACTORY_DKR_USER -p $AON_ARTIFACTORY_DKR_PASSWORD
+    - aws secretsmanager get-secret-value --secret-id $DF_DATABASE_MODELS_DEPLOY_TOKEN --query 'SecretString' --output text --region $AWS_REGION >> df_database_models_deploy_token.json
+    - export DF_DATABASE_MODELS_DEPLOY_TOKEN_USERNAME=$(./jq <df_database_models_deploy_token.json '.username' | tr -d '"')
+    - export DF_DATABASE_MODELS_DEPLOY_TOKEN_PASSWORD=$(./jq <df_database_models_deploy_token.json '.password' | tr -d '"')
+    - aws secretsmanager get-secret-value --secret-id $ADF_PYUTILS_DEPLOY_TOKEN --query 'SecretString' --output text --region $AWS_REGION >> adf_pyutils_deploy_token.json
+    - export ADF_PYUTILS_DEPLOY_TOKEN_USERNAME=$(./jq <adf_pyutils_deploy_token.json '.username' | tr -d '"')
+    - export ADF_PYUTILS_DEPLOY_TOKEN_PASSWORD=$(./jq <adf_pyutils_deploy_token.json '.password' | tr -d '"')
+
+  script:
+    - echo "$DF_DATABASE_MODELS_DEPLOY_TOKEN_USERNAME"
+    - echo "$ADF_PYUTILS_DEPLOY_TOKEN_USERNAME"
+    - which git
+    - git --version
+    - docker build --build-arg DF_DATABASE_MODELS_DEPLOY_TOKEN_USERNAME=$DF_DATABASE_MODELS_DEPLOY_TOKEN_USERNAME --build-arg DF_DATABASE_MODELS_DEPLOY_TOKEN_PASSWORD=$DF_DATABASE_MODELS_DEPLOY_TOKEN_PASSWORD --build-arg ADF_PYUTILS_DEPLOY_TOKEN_USERNAME=$ADF_PYUTILS_DEPLOY_TOKEN_USERNAME --build-arg ADF_PYUTILS_DEPLOY_TOKEN_PASSWORD=$ADF_PYUTILS_DEPLOY_TOKEN_PASSWORD --no-cache -t $AON_ARTIFACTORY_DKR_REG/$AON_ARTIFACTORY_DKR_REPO . 
+    - docker push $AON_ARTIFACTORY_DKR_REG/$AON_ARTIFACTORY_DKR_REPO
+    - docker tag $AON_ARTIFACTORY_DKR_REG/$AON_ARTIFACTORY_DKR_REPO $ECR_LAMBDA_DKR_REG/$ECR_LAMBDA_DKR_REPO
+    - docker push $ECR_LAMBDA_DKR_REG/$ECR_LAMBDA_DKR_REPO
+    - echo "LATEST_IMAGE_SHA=$(docker inspect --format='{{index .RepoDigests 0}}' $ECR_LAMBDA_DKR_REG/$ECR_LAMBDA_DKR_REPO)" >> docker_deploy.env
+    - docker container prune -f && docker system prune -af --volumes
+  artifacts:
+    reports:
+      dotenv: docker_deploy.env
+  only:
+    refs:
+      - develop
+    variables:
+      - $SKIP_NEW_IMAGE_BUILD == 'false'
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+deploy_qa:
+  stage: qa:deploy
+  variables:
+    ENVIRONMENT: qa
+  # dependencies:
+  #   - test
+  extends:
+    - .docker-build-deploy
+  only:
+    refs:
+      - qa
+    variables:
+      - $SKIP_NEW_IMAGE_BUILD == 'false'
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+deploy_staging:
+  stage: staging:deploy
+  variables:
+    ENVIRONMENT: staging
+  # dependencies:
+  #   - test
+  extends:
+    - .docker-build-deploy
+  only:
+    refs:
+      - staging
+    variables:
+      - $SKIP_NEW_IMAGE_BUILD == 'false'
+  tags:
+    - affinity
+    - aws
+    - claviqap8021
+    - staging
+    - useast1
+    - docker
+
+deploy_production:
+  stage: production:deploy
+  variables:
+    ENVIRONMENT: production
+  # dependencies:
+  #   - test
+  extends:
+    - .docker-build-deploy
+  only:
+    refs:
+      - master
+    variables:
+      - $SKIP_NEW_IMAGE_BUILD == 'false'
+  tags:
+    - affinity
+    - aws
+    - prod
+    - useast1
+    - docker
+
+pull_develop:
+  stage: develop:deploy
+  variables:
+    ENVIRONMENT: develop
+  # dependencies:
+  #   - test
+  extends:
+    - .docker-pull
+  only:
+    refs:
+      - develop
+    variables:
+      - $SKIP_NEW_IMAGE_BUILD == 'true'
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+pull_qa:
+  stage: qa:deploy
+  variables:
+    ENVIRONMENT: qa
+  # dependencies:
+  #   - test
+  extends:
+    - .docker-pull
+  only:
+    refs:
+      - qa
+    variables:
+      - $SKIP_NEW_IMAGE_BUILD == 'true'
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+pull_staging:
+  stage: staging:deploy
+  variables:
+    ENVIRONMENT: staging
+  # dependencies:
+  #   - test
+  extends:
+    - .docker-pull
+  only:
+    refs:
+      - staging
+    variables:
+      - $SKIP_NEW_IMAGE_BUILD == 'true'
+  tags:
+    - affinity
+    - aws
+    - claviqap8021
+    - staging
+    - useast1
+    - docker
+
+pull_production:
+  stage: production:deploy
+  variables:
+    ENVIRONMENT: production
+  # dependencies:
+  #   - test
+  extends:
+    - .docker-pull
+  only:
+    refs:
+      - master
+    variables:
+      - $SKIP_NEW_IMAGE_BUILD == 'true'
+  tags:
+    - affinity
+    - aws
+    - prod
+    - useast1
+    - docker
+
+plan_develop:
+  stage: develop:plan
+  variables:
+    ENVIRONMENT: develop
+  dependencies:
+    - deploy_develop
+    - validate_develop
+    - pull_develop
+  extends:
+    - .terraform-init
+  script:
+    - echo $LATEST_IMAGE_SHA
+    - terraform plan --var-file=$TF_VAR_FILE --var="image_uri=$LATEST_IMAGE_SHA" --out $TF_PLAN
+  only:
+    refs:
+      - develop
+  artifacts:
+    paths:
+      - $TF_ROOT/$TF_PLAN
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+plan_qa:
+  stage: qa:plan
+  variables:
+    ENVIRONMENT: qa
+  dependencies:
+    - deploy_qa
+    - validate_qa
+    - pull_qa
+  extends:
+    - .terraform-init
+  script:
+    - echo $LATEST_IMAGE_SHA
+    - terraform plan --var-file=$TF_VAR_FILE --var="image_uri=$LATEST_IMAGE_SHA" --out $TF_PLAN
+  only:
+    refs:
+      - qa
+  artifacts:
+    paths:
+      - $TF_ROOT/$TF_PLAN
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+plan_staging:
+  stage: staging:plan
+  variables:
+    ENVIRONMENT: staging
+  dependencies:
+    - deploy_staging
+    - validate_staging
+    - pull_staging
+  extends:
+    - .terraform-init
+  script:
+    - echo $LATEST_IMAGE_SHA
+    - terraform plan --var-file=$TF_VAR_FILE --var="image_uri=$LATEST_IMAGE_SHA" --out $TF_PLAN
+  only:
+    refs:
+      - staging
+  artifacts:
+    paths:
+      - $TF_ROOT/$TF_PLAN
+  tags:
+    - affinity
+    - aws
+    - claviqap8021
+    - staging
+    - useast1
+    - docker
+
+plan_production:
+  stage: production:plan
+  variables:
+    ENVIRONMENT: production
+  dependencies:
+    - deploy_production
+    - validate_production
+    - pull_production
+  extends:
+    - .terraform-init
+  script:
+    - echo $LATEST_IMAGE_SHA
+    - terraform plan --var-file=$TF_VAR_FILE --var="image_uri=$LATEST_IMAGE_SHA" --out $TF_PLAN
+  only:
+    refs:
+      - master
+  artifacts:
+    paths:
+      - $TF_ROOT/$TF_PLAN
+  tags:
+    - affinity
+    - aws
+    - prod
+    - useast1
+    - docker
+
+apply_develop:
+  stage: develop:apply
+  variables:
+    ENVIRONMENT: develop
+  dependencies:
+    - plan_develop
+  extends:
+    - .terraform-init
+  script:
+    - terraform apply --input=false --auto-approve $TF_PLAN
+  when: manual
+  allow_failure: false
+  only:
+    refs:
+      - develop
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+apply_qa:
+  stage: qa:apply
+  variables:
+    ENVIRONMENT: qa
+  dependencies:
+    - plan_qa
+  extends:
+    - .terraform-init
+  script:
+    - terraform apply --input=false --auto-approve $TF_PLAN
+  when: manual
+  allow_failure: false
+  only:
+    refs:
+      - qa
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+apply_staging:
+  stage: staging:apply
+  variables:
+    ENVIRONMENT: staging
+  dependencies:
+    - plan_staging
+  extends:
+    - .terraform-init
+  script:
+    - terraform apply --input=false --auto-approve $TF_PLAN
+  when: manual
+  allow_failure: false
+  only:
+    refs:
+      - staging
+  tags:
+    - affinity
+    - aws
+    - claviqap8021
+    - staging
+    - useast1
+    - docker
+
+apply_production:
+  stage: production:apply
+  variables:
+    ENVIRONMENT: production
+  dependencies:
+    - plan_production
+  extends:
+    - .terraform-init
+  script:
+    - terraform apply --input=false --auto-approve $TF_PLAN
+  when: manual
+  allow_failure: false
+  only:
+    refs:
+      - master
+  tags:
+    - affinity
+    - aws
+    - prod
+    - useast1
+    - docker
+
+migrations_develop:
+  stage: develop:migrations
+  variables:
+    ENVIRONMENT: develop
+  dependencies:
+    - apply_develop
+  allow_failure: false
+  extends:
+    - .flyway-migrations
+  only:
+    refs:
+      - develop
+    variables:
+      - $SKIP_FLYWAY_MIGRATIONS == 'false'
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+migrations_qa:
+  stage: qa:migrations
+  variables:
+    ENVIRONMENT: qa
+  dependencies:
+    - apply_qa
+  allow_failure: false
+  extends:
+    - .flyway-migrations
+  only:
+    refs:
+      - qa
+    variables:
+      - $SKIP_FLYWAY_MIGRATIONS == 'false'
+  tags:
+    - affinity
+    - aws
+    - nclavndapp00444
+    - dev
+    - useast1
+    - docker
+
+migrations_staging:
+  stage: staging:migrations
+  variables:
+    ENVIRONMENT: staging
+  dependencies:
+    - apply_staging
+  allow_failure: false
+  extends:
+    - .flyway-migrations
+  only:
+    refs:
+      - staging
+    variables:
+      - $SKIP_FLYWAY_MIGRATIONS == 'false'
+  tags:
+    - affinity
+    - aws
+    - claviqap8021
+    - staging
+    - useast1
+    - docker
+
+migrations_production:
+  stage: production:migrations
+  variables:
+    ENVIRONMENT: production
+  dependencies:
+    - apply_production
+  allow_failure: false
+  extends:
+    - .flyway-migrations
+  only:
+    refs:
+      - master
+    variables:
+      - $SKIP_FLYWAY_MIGRATIONS == 'false'
+  tags:
+    - affinity
+    - aws
+    - prod
+    - useast1
+    - docker

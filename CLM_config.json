@@ -1,0 +1,17 @@
+{
+    "Aon.DF.CommonLoggingModule": {
+      "Version": "1.0",
+      "Environment": "DA",
+      "AppID": "AR4262",
+      "AppName": "US Affinity Data Foundation",
+      "LogSettings": {
+        "MultiLineOutput": false,
+        "LogMinimumLevel": "info",
+        "LogType": "console",
+        "RetentionDaysCount": 30,
+        "masking": true,
+        "MaskElement": ["df_line_item_id","df_invoice_id", "source_invoice_id", "invoice_number"]
+      }
+    }
+  }
+   
